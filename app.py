@@ -8,25 +8,30 @@ from openpyxl import Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.styles import Font, Alignment, numbers
 
-st.set_page_config(page_title="Weekly Report Processor", layout="wide")
+st.set_page_config(page_title="Weekly Company Report Calculator", layout="wide")
 
 # -----------------------------
 # State & helpers
 # -----------------------------
 def init_employees_state():
     if "employees" not in st.session_state:
-        # Demo list — editable in the sidebar: rate is in PERCENT
-        st.session_state.employees = [
-            {"name": "John Doe", "rate_pct": 25.0, "truck": True,  "meter": False},
-            {"name": "Jane Smith", "rate_pct": 30.0, "truck": False, "meter": True},
-            {"name": "Alex Brown", "rate_pct": 28.0, "truck": True,  "meter": True},
-        ]
+        # Start empty; will auto-seed from the uploaded report's technician names
+        st.session_state.employees = []
+    if "seeded_from_file" not in st.session_state:
+        st.session_state.seeded_from_file = False
 
 def get_employee_by_name(name: str):
     for e in st.session_state.employees:
         if e["name"] == name:
             return e
     return None
+
+def ensure_employee(name: str, default_rate=25.0, default_truck=False, default_meter=False):
+    emp = get_employee_by_name(name)
+    if emp is None:
+        emp = {"name": name, "rate_pct": float(default_rate), "truck": bool(default_truck), "meter": bool(default_meter)}
+        st.session_state.employees.append(emp)
+    return emp
 
 def auto_col_width(ws):
     """Autosize columns based on max content length."""
@@ -146,41 +151,42 @@ def export_per_tech_xlsx(df_tech: pd.DataFrame, tech_info: dict, date_col: str, 
 # -----------------------------
 init_employees_state()
 
-st.title("Weekly Company Report → Per-Technician Split & Charges")
-st.caption(
-    "Upload a weekly .xlsx, map Date/Technician/Job Fee columns, then export per-tech files with Rate(%), "
-    "Truck ($50/day, max $150), Meter ($25), Penguin Data ($6.25), and a bold Total row. Columns are auto-sized."
-)
+st.title("Weekly Company Report Calculator")
 
-# Sidebar: employee manager (rate in %, Truck/Meter checkboxes)
+# Sidebar: Technicians (inline editing for rate %, Truck, Meter)
 with st.sidebar:
-    st.header("Technicians (edit rate % + charges)")
-    if st.session_state.employees:
-        for e in st.session_state.employees:
-            st.write(f"**{e['name']}** — Rate: {e['rate_pct']}% · Truck: {'✅' if e['truck'] else '—'} · Meter: {'✅' if e['meter'] else '—'}")
+    st.header("Technicians")
 
-    st.divider()
-    st.subheader("Add / Edit technician")
-    with st.form("emp_form"):
-        names = [e["name"] for e in st.session_state.employees]
-        mode = st.radio("Mode", ["Add", "Edit"], horizontal=True)
-        sel_name = st.selectbox("Select name (for Edit)", names) if mode == "Edit" else None
-        name = st.text_input("Name", value=(sel_name or ""))
-        default_rate = get_employee_by_name(sel_name)["rate_pct"] if sel_name else 25.0
-        rate_pct = st.number_input("Rate (%)", min_value=0.0, max_value=1000.0, value=float(default_rate))
-        default_truck = get_employee_by_name(sel_name)["truck"] if sel_name else False
-        default_meter = get_employee_by_name(sel_name)["meter"] if sel_name else False
-        truck = st.checkbox("Truck charge applies", value=bool(default_truck))
-        meter = st.checkbox("Meter fee applies", value=bool(default_meter))
-        submitted = st.form_submit_button("Save")
-        if submitted and name.strip():
-            if mode == "Add" and name not in names:
-                st.session_state.employees.append({"name": name.strip(), "rate_pct": rate_pct, "truck": truck, "meter": meter})
-                st.success(f"Added {name}")
-            elif mode == "Edit" and sel_name in names:
-                emp = get_employee_by_name(sel_name)
-                emp.update({"name": name.strip(), "rate_pct": rate_pct, "truck": truck, "meter": meter})
-                st.success(f"Updated {sel_name}")
+    # Inline editor per technician
+    if st.session_state.employees:
+        for i, e in enumerate(st.session_state.employees):
+            st.markdown(f"**{e['name']}**")
+            # Unique keys for each widget
+            rate_key = f"rate_{i}"
+            truck_key = f"truck_{i}"
+            meter_key = f"meter_{i}"
+
+            new_rate = st.number_input("Rate (%)", min_value=0.0, max_value=1000.0,
+                                       value=float(e.get("rate_pct", 25.0)), key=rate_key)
+            new_truck = st.checkbox("Truck", value=bool(e.get("truck", False)), key=truck_key)
+            new_meter = st.checkbox("Meter", value=bool(e.get("meter", False)), key=meter_key)
+
+            # Sync back to state
+            e["rate_pct"] = float(new_rate)
+            e["truck"] = bool(new_truck)
+            e["meter"] = bool(new_meter)
+            st.divider()
+
+    # Add technician
+    st.subheader("Add technician")
+    new_name = st.text_input("Name", key="add_name")
+    new_rate_pct = st.number_input("Rate (%)", min_value=0.0, max_value=1000.0, value=25.0, key="add_rate")
+    new_truck_cb = st.checkbox("Truck", key="add_truck")
+    new_meter_cb = st.checkbox("Meter", key="add_meter")
+    if st.button("Add"):
+        if new_name.strip():
+            ensure_employee(new_name.strip(), default_rate=new_rate_pct, default_truck=new_truck_cb, default_meter=new_meter_cb)
+            st.success(f"Added {new_name.strip()}")
 
 # Main: file upload and processing
 uploaded = st.file_uploader("Upload weekly .xlsx report", type=["xlsx"])
@@ -222,8 +228,17 @@ if uploaded:
     with c3:
         jobfee_col = st.selectbox("Job fee column (multiplied by Rate %)", cols, index=cols.index(default_jobfee))
 
-    # Determine technicians we can process (present in both the file and our system list)
+    # Seed the employees list from the uploaded report (once per session)
     techs_in_file = sorted(df[tech_col].dropna().astype(str).unique())
+    if not st.session_state.seeded_from_file and techs_in_file:
+        # Clear and seed to match dummy report technicians
+        st.session_state.employees = []
+        for t in techs_in_file:
+            ensure_employee(t, default_rate=25.0, default_truck=False, default_meter=False)
+        st.session_state.seeded_from_file = True
+        st.success("Technicians list initialized from the uploaded report.")
+
+    # Determine technicians we can process (present in both the file and our system list)
     system_names = [e["name"] for e in st.session_state.employees]
     matched = [t for t in techs_in_file if t in system_names]
 
@@ -255,8 +270,5 @@ if uploaded:
         file_name=f"technician_breakdowns_{datetime.now().date()}.zip",
         mime="application/zip",
     )
-
-    st.info("Notes: Charge names are placed in the far-left column under the dated rows; amounts are in the last column. "
-            "Columns are auto-sized; 'Total:' row is bold (label and numbers).")
 else:
     st.info("Upload a weekly .xlsx report to begin.")
