@@ -10,26 +10,39 @@ from openpyxl.styles import Font, Alignment, numbers
 
 st.set_page_config(page_title="Weekly Company Report Calculator", layout="wide")
 
+# --- Appearance tweaks: widen the sidebar to ~half (a little more) of the display ---
+st.markdown("""
+<style>
+/* Make the sidebar wider (roughly a bit more than half of viewport width).
+   Adjust 48vw → e.g. 45vw or 50vw if you want slightly less/more. */
+[data-testid="stSidebar"] {
+    min-width: 48vw;
+    max-width: 48vw;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# -----------------------------
+# Pre-populated technicians
+# -----------------------------
+PREPOP_TECHS = [
+    {"name": "John Doe",        "rate_pct": 25.0, "truck": False, "meter": False},
+    {"name": "Nathan Stevens",  "rate_pct": 25.0, "truck": False, "meter": False},
+    {"name": "Spencer Monahan", "rate_pct": 25.0, "truck": False, "meter": False},
+    {"name": "Mikal Segall",    "rate_pct": 25.0, "truck": False, "meter": False},
+    {"name": "Jonathan Moss",   "rate_pct": 25.0, "truck": False, "meter": False},
+    {"name": "Bob Rhyss",       "rate_pct": 25.0, "truck": False, "meter": False},
+    {"name": "Clyde Owen",      "rate_pct": 25.0, "truck": False, "meter": False},
+]
+
 # -----------------------------
 # State & helpers
 # -----------------------------
-PREPOP_TECHS = [
-    "John Doe",
-    "Nathan Stevens",
-    "Spencer Monahan",
-    "Mikal Segall",
-    "Jonathan Moss",
-    "Bob Rhyss",
-    "Clyde Owen",
-]
-
 def init_state():
     if "employees" not in st.session_state:
-        # Pre-populated, editable baseline (Rate % defaults to 25, Truck/Meter off)
-        st.session_state.employees = [
-            {"name": n, "rate_pct": 25.0, "truck": False, "meter": False}
-            for n in PREPOP_TECHS
-        ]
+        st.session_state.employees = [dict(x) for x in PREPOP_TECHS]
+    if "editing_index" not in st.session_state:
+        st.session_state.editing_index = None
 
 def get_employee_by_name(name: str):
     for e in st.session_state.employees:
@@ -38,14 +51,16 @@ def get_employee_by_name(name: str):
     return None
 
 def ensure_employee(name: str, rate_pct=25.0, truck=False, meter=False):
-    emp = get_employee_by_name(name)
-    if emp is None:
-        emp = {"name": name, "rate_pct": float(rate_pct), "truck": bool(truck), "meter": bool(meter)}
-        st.session_state.employees.append(emp)
-    return emp
+    e = get_employee_by_name(name)
+    if e is None:
+        st.session_state.employees.append({
+            "name": name.strip(),
+            "rate_pct": float(rate_pct),
+            "truck": bool(truck),
+            "meter": bool(meter),
+        })
 
 def auto_col_width(ws):
-    """Autosize columns based on max content length."""
     for col in ws.columns:
         max_len = 0
         col_letter = col[0].column_letter
@@ -55,7 +70,6 @@ def auto_col_width(ws):
         ws.column_dimensions[col_letter].width = min(max(10, max_len + 2), 60)
 
 def format_amount_col(ws, amount_col_idx: int, bold_rows: set):
-    """Right-align amount col and format as currency; bold for specified rows."""
     for col_cells in ws.iter_cols(min_col=amount_col_idx, max_col=amount_col_idx, min_row=2, max_row=ws.max_row):
         for c in col_cells:
             c.alignment = Alignment(horizontal="right")
@@ -66,25 +80,21 @@ def format_amount_col(ws, amount_col_idx: int, bold_rows: set):
 
 def export_per_tech_xlsx(df_tech: pd.DataFrame, tech_info: dict, date_col: str, tech_col: str, jobfee_col: str) -> bytes:
     """
-    Workbook for a single technician:
+    Per-tech workbook:
     - Amount = Job Fee * (Rate% / 100)
-    - Truck ($50/day, cap $150), Meter ($25), Penguin Data ($6.25) as rows (name in far-left col, amount in last col)
-    - Bold Total row
-    - Auto-size columns
+    - Truck ($50/day, cap $150), Meter ($25), Penguin ($6.25)
+    - Charge names in far-left column, amounts in last column
+    - Bold Total row; auto-size columns
     """
     d = df_tech.copy()
-
-    # Compute Amount from Job Fee and Rate (%)
     d["Rate (%)"] = float(tech_info["rate_pct"])
     base = pd.to_numeric(d[jobfee_col], errors="coerce").fillna(0.0)
     d["Amount"] = base * (d["Rate (%)"] / 100.0)
 
-    # Workbook & sheet
     wb = Workbook()
     ws = wb.active
     ws.title = tech_info["name"][:31]
 
-    # Order columns: Date, Technician, all others..., Rate (%), Amount
     cols = list(d.columns)
     ordered = []
     if date_col in cols: ordered.append(date_col)
@@ -95,38 +105,30 @@ def export_per_tech_xlsx(df_tech: pd.DataFrame, tech_info: dict, date_col: str, 
     ordered.extend(["Rate (%)", "Amount"])
     d = d[ordered]
 
-    # Write dataframe
     for r in dataframe_to_rows(d, index=False, header=True):
         ws.append(r)
 
-    # Determine column positions
-    last_col_idx = ws.max_column   # after writing, last column is "Amount"
-    amount_col_idx = last_col_idx  # we placed Amount last
+    last_col_idx = ws.max_column
+    amount_col_idx = last_col_idx
 
-    # Append charges rows (names in far-left col; amounts in last col)
     bold_rows = set()
     charges_total = 0.0
 
-    # Truck: $50 per working day from unique dates, cap $150
     if tech_info.get("truck"):
         unique_days = pd.to_datetime(d[date_col], errors="coerce").dt.date.dropna().unique()
-        truck_days = len(unique_days)
-        truck_fee = min(3, truck_days) * 50.0
+        truck_fee = min(3, len(unique_days)) * 50.0
         if truck_fee > 0:
             ws.append(["Truck Charge"] + [None]*(last_col_idx - 2) + [truck_fee])
             charges_total += truck_fee
 
-    # Meter: fixed $25
     if tech_info.get("meter"):
         ws.append(["Meter Fee"] + [None]*(last_col_idx - 2) + [25.0])
         charges_total += 25.0
 
-    # Penguin Data: fixed $6.25 (always)
     ws.append(["Penguin Data Fee"] + [None]*(last_col_idx - 2) + [6.25])
     charges_total += 6.25
 
-    # Sum of Amount column for original rows (exclude charge rows)
-    data_end_row = 1 + len(d)  # header + data
+    data_end_row = 1 + len(d)
     data_amount_sum = 0.0
     for r in range(2, data_end_row + 1):
         val = ws.cell(row=r, column=amount_col_idx).value
@@ -137,20 +139,14 @@ def export_per_tech_xlsx(df_tech: pd.DataFrame, tech_info: dict, date_col: str, 
     ws.append(["Total:"] + [None]*(last_col_idx - 2) + [total])
     total_row_idx = ws.max_row
 
-    # Style header row bold
     for cell in ws[1]:
         cell.font = Font(bold=True)
         cell.alignment = Alignment(vertical="center")
-
-    # Make "Total:" row bold (text + numbers)
     for cell in ws[total_row_idx]:
         cell.font = Font(bold=True)
 
-    # Format amount column & right-align; bold total row
     bold_rows.add(total_row_idx)
     format_amount_col(ws, amount_col_idx, bold_rows)
-
-    # Auto-size columns to avoid cropping
     auto_col_width(ws)
 
     bio = io.BytesIO()
@@ -164,42 +160,67 @@ init_state()
 
 st.title("Weekly Company Report Calculator")
 
-# Sidebar: Technicians (inline editing for rate %, Truck, Meter)
+# Sidebar: foldable “Technicians” bar holding both the list and the add form
 with st.sidebar:
-    st.header("Technicians")
+    with st.expander("Technicians", expanded=True):
+        # --- Non-editable list with a pen button per technician ---
+        if st.session_state.employees:
+            for i, e in enumerate(st.session_state.employees):
+                col1, col2 = st.columns([8, 1])
+                with col1:
+                    st.markdown(f"**{e['name']}**")
+                    st.caption(
+                        f"Rate: {e['rate_pct']}%  •  "
+                        f"Truck: {'Yes' if e.get('truck') else 'No'}  •  "
+                        f"Meter: {'Yes' if e.get('meter') else 'No'}"
+                    )
+                with col2:
+                    if st.session_state.editing_index != i:
+                        if st.button("✏️", key=f"edit_{i}", help="Edit"):
+                            st.session_state.editing_index = i
+                            st.rerun()
 
-    # Inline editor per technician
-    if st.session_state.employees:
-        for i, e in enumerate(st.session_state.employees):
-            st.markdown(f"**{e['name']}**")
-            rate_key = f"rate_{i}"
-            truck_key = f"truck_{i}"
-            meter_key = f"meter_{i}"
+                # Inline editor (only for the selected tech)
+                if st.session_state.editing_index == i:
+                    with st.form(f"edit_form_{i}", clear_on_submit=False):
+                        new_rate = st.number_input(
+                            "Rate (%)", min_value=0.0, max_value=1000.0,
+                            value=float(e.get("rate_pct", 25.0)), key=f"rate_{i}"
+                        )
+                        new_truck = st.checkbox("Truck", value=bool(e.get("truck", False)), key=f"truck_{i}")
+                        new_meter = st.checkbox("Meter", value=bool(e.get("meter", False)), key=f"meter_{i}")
+                        c1, c2 = st.columns(2)
+                        save = c1.form_submit_button("Save")
+                        cancel = c2.form_submit_button("Cancel")
+                        if save:
+                            e["rate_pct"] = float(new_rate)
+                            e["truck"] = bool(new_truck)
+                            e["meter"] = bool(new_meter)
+                            st.session_state.editing_index = None
+                            st.success(f"Updated {e['name']}")
+                            st.rerun()
+                        if cancel:
+                            st.session_state.editing_index = None
+                            st.rerun()
 
-            new_rate = st.number_input("Rate (%)", min_value=0.0, max_value=1000.0,
-                                       value=float(e.get("rate_pct", 25.0)), key=rate_key)
-            new_truck = st.checkbox("Truck", value=bool(e.get("truck", False)), key=truck_key)
-            new_meter = st.checkbox("Meter", value=bool(e.get("meter", False)), key=meter_key)
+                st.divider()
+        else:
+            st.info("No technicians yet.")
 
-            e["rate_pct"] = float(new_rate)
-            e["truck"] = bool(new_truck)
-            e["meter"] = bool(new_meter)
-            st.divider()
-    else:
-        st.info("No technicians yet.")
+        # --- Add new technician section (inside the same folding bar) ---
+        st.subheader("Add technician")
+        with st.form("add_tech_form", clear_on_submit=True):
+            new_name = st.text_input("Name")
+            new_rate_pct = st.number_input("Rate (%)", min_value=0.0, max_value=1000.0, value=25.0)
+            new_truck = st.checkbox("Truck")
+            new_meter = st.checkbox("Meter")
+            add_btn = st.form_submit_button("Add")
+            if add_btn and new_name.strip():
+                ensure_employee(new_name.strip(), rate_pct=new_rate_pct, truck=new_truck, meter=new_meter)
+                st.success(f"Added {new_name.strip()}")
+                st.rerun()
 
-    # Add technician
-    st.subheader("Add technician")
-    new_name = st.text_input("Name", key="add_name")
-    new_rate_pct = st.number_input("Rate (%)", min_value=0.0, max_value=1000.0, value=25.0, key="add_rate")
-    new_truck_cb = st.checkbox("Truck", key="add_truck")
-    new_meter_cb = st.checkbox("Meter", key="add_meter")
-    if st.button("Add"):
-        if new_name.strip():
-            ensure_employee(new_name.strip(), rate_pct=new_rate_pct, truck=new_truck_cb, meter=new_meter_cb)
-            st.success(f"Added {new_name.strip()}")
-
-# Main: file upload and processing
+# --- Main: file upload & processing ---
 uploaded = st.file_uploader("Upload weekly .xlsx report", type=["xlsx"])
 
 if uploaded:
@@ -212,14 +233,13 @@ if uploaded:
     st.subheader("Preview")
     st.dataframe(df.head(20), use_container_width=True)
 
-    # Column mapping (auto-guess; allow override)
     cols = list(df.columns)
     if len(cols) < 3:
         st.error("The report should have at least three columns (Date, Technician, Job Fee).")
         st.stop()
 
+    # Column mapping
     default_date = cols[0]
-    # Try to guess tech column
     guess_tech = None
     for cand in ["Technician", "Tech", "Worker", "Employee", "Name"]:
         if cand in cols:
@@ -227,7 +247,6 @@ if uploaded:
             break
     if guess_tech is None:
         guess_tech = cols[1]
-
     default_jobfee = cols[-1]
 
     st.markdown("#### Column mapping")
@@ -239,19 +258,19 @@ if uploaded:
     with c3:
         jobfee_col = st.selectbox("Job fee column (multiplied by Rate %)", cols, index=cols.index(default_jobfee))
 
-    # Determine technicians we can process (present in both the file and the prepop list)
+    # Filter to technicians that exist in the pre-populated list
     techs_in_file = sorted(df[tech_col].dropna().astype(str).unique())
     system_names = [e["name"] for e in st.session_state.employees]
     matched = [t for t in techs_in_file if t in system_names]
 
     if not matched:
-        st.warning("No matching technicians between the file and the system list. Adjust names in the sidebar or the column mapping.")
+        st.warning("No matching technicians between the file and the system list. Adjust names in the sidebar or the mapping.")
         st.stop()
 
     st.markdown("#### Technicians detected & matched")
     st.write(", ".join(matched))
 
-    # Generate per-tech files into a ZIP
+    # Create ZIP of per-tech files
     zbuf = io.BytesIO()
     with zipfile.ZipFile(zbuf, mode="w", compression=zipfile.ZIP_DEFLATED) as z:
         export_count = 0
