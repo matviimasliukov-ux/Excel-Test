@@ -13,12 +13,23 @@ st.set_page_config(page_title="Weekly Company Report Calculator", layout="wide")
 # -----------------------------
 # State & helpers
 # -----------------------------
-def init_employees_state():
+PREPOP_TECHS = [
+    "John Doe",
+    "Nathan Stevens",
+    "Spencer Monahan",
+    "Mikal Segall",
+    "Jonathan Moss",
+    "Bob Rhyss",
+    "Clyde Owen",
+]
+
+def init_state():
     if "employees" not in st.session_state:
-        # Start empty; will auto-seed from the uploaded report's technician names
-        st.session_state.employees = []
-    if "seeded_from_file" not in st.session_state:
-        st.session_state.seeded_from_file = False
+        # Pre-populated, editable baseline (Rate % defaults to 25, Truck/Meter off)
+        st.session_state.employees = [
+            {"name": n, "rate_pct": 25.0, "truck": False, "meter": False}
+            for n in PREPOP_TECHS
+        ]
 
 def get_employee_by_name(name: str):
     for e in st.session_state.employees:
@@ -26,10 +37,10 @@ def get_employee_by_name(name: str):
             return e
     return None
 
-def ensure_employee(name: str, default_rate=25.0, default_truck=False, default_meter=False):
+def ensure_employee(name: str, rate_pct=25.0, truck=False, meter=False):
     emp = get_employee_by_name(name)
     if emp is None:
-        emp = {"name": name, "rate_pct": float(default_rate), "truck": bool(default_truck), "meter": bool(default_meter)}
+        emp = {"name": name, "rate_pct": float(rate_pct), "truck": bool(truck), "meter": bool(meter)}
         st.session_state.employees.append(emp)
     return emp
 
@@ -55,10 +66,10 @@ def format_amount_col(ws, amount_col_idx: int, bold_rows: set):
 
 def export_per_tech_xlsx(df_tech: pd.DataFrame, tech_info: dict, date_col: str, tech_col: str, jobfee_col: str) -> bytes:
     """
-    Build a workbook for a single technician:
+    Workbook for a single technician:
     - Amount = Job Fee * (Rate% / 100)
-    - Append charges: Truck ($50/day, cap $150), Meter ($25), Penguin Data ($6.25) in far-left column
-    - Add bold Total row
+    - Truck ($50/day, cap $150), Meter ($25), Penguin Data ($6.25) as rows (name in far-left col, amount in last col)
+    - Bold Total row
     - Auto-size columns
     """
     d = df_tech.copy()
@@ -149,7 +160,7 @@ def export_per_tech_xlsx(df_tech: pd.DataFrame, tech_info: dict, date_col: str, 
 # -----------------------------
 # UI
 # -----------------------------
-init_employees_state()
+init_state()
 
 st.title("Weekly Company Report Calculator")
 
@@ -161,7 +172,6 @@ with st.sidebar:
     if st.session_state.employees:
         for i, e in enumerate(st.session_state.employees):
             st.markdown(f"**{e['name']}**")
-            # Unique keys for each widget
             rate_key = f"rate_{i}"
             truck_key = f"truck_{i}"
             meter_key = f"meter_{i}"
@@ -171,11 +181,12 @@ with st.sidebar:
             new_truck = st.checkbox("Truck", value=bool(e.get("truck", False)), key=truck_key)
             new_meter = st.checkbox("Meter", value=bool(e.get("meter", False)), key=meter_key)
 
-            # Sync back to state
             e["rate_pct"] = float(new_rate)
             e["truck"] = bool(new_truck)
             e["meter"] = bool(new_meter)
             st.divider()
+    else:
+        st.info("No technicians yet.")
 
     # Add technician
     st.subheader("Add technician")
@@ -185,7 +196,7 @@ with st.sidebar:
     new_meter_cb = st.checkbox("Meter", key="add_meter")
     if st.button("Add"):
         if new_name.strip():
-            ensure_employee(new_name.strip(), default_rate=new_rate_pct, default_truck=new_truck_cb, default_meter=new_meter_cb)
+            ensure_employee(new_name.strip(), rate_pct=new_rate_pct, truck=new_truck_cb, meter=new_meter_cb)
             st.success(f"Added {new_name.strip()}")
 
 # Main: file upload and processing
@@ -228,22 +239,13 @@ if uploaded:
     with c3:
         jobfee_col = st.selectbox("Job fee column (multiplied by Rate %)", cols, index=cols.index(default_jobfee))
 
-    # Seed the employees list from the uploaded report (once per session)
+    # Determine technicians we can process (present in both the file and the prepop list)
     techs_in_file = sorted(df[tech_col].dropna().astype(str).unique())
-    if not st.session_state.seeded_from_file and techs_in_file:
-        # Clear and seed to match dummy report technicians
-        st.session_state.employees = []
-        for t in techs_in_file:
-            ensure_employee(t, default_rate=25.0, default_truck=False, default_meter=False)
-        st.session_state.seeded_from_file = True
-        st.success("Technicians list initialized from the uploaded report.")
-
-    # Determine technicians we can process (present in both the file and our system list)
     system_names = [e["name"] for e in st.session_state.employees]
     matched = [t for t in techs_in_file if t in system_names]
 
     if not matched:
-        st.warning("No matching technicians between the file and the system list. Add them in the sidebar or adjust names.")
+        st.warning("No matching technicians between the file and the system list. Adjust names in the sidebar or the column mapping.")
         st.stop()
 
     st.markdown("#### Technicians detected & matched")
