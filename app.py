@@ -10,21 +10,24 @@ from openpyxl.styles import Font, Alignment, numbers
 
 st.set_page_config(page_title="Weekly Company Report Calculator", layout="wide")
 
-# --- Appearance tweaks: widen the sidebar to ~half (a little more) of the display ---
+# ---------- Compact sidebar styling ----------
 st.markdown("""
 <style>
-/* Make the sidebar wider (roughly a bit more than half of viewport width).
-   Adjust 48vw → e.g. 45vw or 50vw if you want slightly less/more. */
-[data-testid="stSidebar"] {
-    min-width: 48vw;
-    max-width: 48vw;
-}
+/* Normal, compact sidebar width */
+[data-testid="stSidebar"] { min-width: 18rem; max-width: 22rem; }
+/* Tighten spacing inside our custom sidebar wrapper */
+.sidebar-tech .block-container { padding-top: 0.5rem !important; }
+.sidebar-tech .tech-item { margin: 0.25rem 0 0.5rem 0; padding-bottom: 0.25rem; border-bottom: 1px solid rgba(255,255,255,0.08); }
+.sidebar-tech .tech-title { display: flex; align-items: center; justify-content: space-between; }
+.sidebar-tech .tech-meta { margin: 0.1rem 0 0.25rem 0; font-size: 0.85rem; opacity: 0.85; }
+/* Smaller edit button */
+.sidebar-tech .stButton>button { padding: 0.2rem 0.4rem; line-height: 1; border-radius: 6px; }
+/* Expander padding */
+.sidebar-tech [data-testid="stExpander"] details > div { padding-top: 0.25rem; padding-bottom: 0.25rem; }
 </style>
 """, unsafe_allow_html=True)
 
-# -----------------------------
-# Pre-populated technicians
-# -----------------------------
+# ---------- Pre-populated technicians ----------
 PREPOP_TECHS = [
     {"name": "John Doe",        "rate_pct": 25.0, "truck": False, "meter": False},
     {"name": "Nathan Stevens",  "rate_pct": 25.0, "truck": False, "meter": False},
@@ -35,9 +38,7 @@ PREPOP_TECHS = [
     {"name": "Clyde Owen",      "rate_pct": 25.0, "truck": False, "meter": False},
 ]
 
-# -----------------------------
-# State & helpers
-# -----------------------------
+# ---------- State & helpers ----------
 def init_state():
     if "employees" not in st.session_state:
         st.session_state.employees = [dict(x) for x in PREPOP_TECHS]
@@ -51,7 +52,9 @@ def get_employee_by_name(name: str):
     return None
 
 def ensure_employee(name: str, rate_pct=25.0, truck=False, meter=False):
-    e = get_employee_by_name(name)
+    if not name.strip():
+        return
+    e = get_employee_by_name(name.strip())
     if e is None:
         st.session_state.employees.append({
             "name": name.strip(),
@@ -80,7 +83,6 @@ def format_amount_col(ws, amount_col_idx: int, bold_rows: set):
 
 def export_per_tech_xlsx(df_tech: pd.DataFrame, tech_info: dict, date_col: str, tech_col: str, jobfee_col: str) -> bytes:
     """
-    Per-tech workbook:
     - Amount = Job Fee * (Rate% / 100)
     - Truck ($50/day, cap $150), Meter ($25), Penguin ($6.25)
     - Charge names in far-left column, amounts in last column
@@ -153,28 +155,29 @@ def export_per_tech_xlsx(df_tech: pd.DataFrame, tech_info: dict, date_col: str, 
     wb.save(bio)
     return bio.getvalue()
 
-# -----------------------------
-# UI
-# -----------------------------
+# ---------- UI ----------
 init_state()
 
 st.title("Weekly Company Report Calculator")
 
-# Sidebar: foldable “Technicians” bar holding both the list and the add form
+# Sidebar: one foldable bar with list + add form (clean view, inline edit per person)
 with st.sidebar:
+    st.markdown('<div class="sidebar-tech">', unsafe_allow_html=True)
     with st.expander("Technicians", expanded=True):
-        # --- Non-editable list with a pen button per technician ---
+
+        # ---- Non-editable list with a pen button to edit one person at a time ----
         if st.session_state.employees:
             for i, e in enumerate(st.session_state.employees):
-                col1, col2 = st.columns([8, 1])
-                with col1:
-                    st.markdown(f"**{e['name']}**")
-                    st.caption(
-                        f"Rate: {e['rate_pct']}%  •  "
-                        f"Truck: {'Yes' if e.get('truck') else 'No'}  •  "
-                        f"Meter: {'Yes' if e.get('meter') else 'No'}"
+                st.markdown('<div class="tech-item">', unsafe_allow_html=True)
+
+                c1, c2 = st.columns([8, 1])
+                with c1:
+                    st.markdown(f'<div class="tech-title"><b>{e["name"]}</b></div>', unsafe_allow_html=True)
+                    st.markdown(
+                        f'<div class="tech-meta">Rate: {e["rate_pct"]}% • Truck: {"Yes" if e.get("truck") else "No"} • Meter: {"Yes" if e.get("meter") else "No"}</div>',
+                        unsafe_allow_html=True
                     )
-                with col2:
+                with c2:
                     if st.session_state.editing_index != i:
                         if st.button("✏️", key=f"edit_{i}", help="Edit"):
                             st.session_state.editing_index = i
@@ -189,38 +192,36 @@ with st.sidebar:
                         )
                         new_truck = st.checkbox("Truck", value=bool(e.get("truck", False)), key=f"truck_{i}")
                         new_meter = st.checkbox("Meter", value=bool(e.get("meter", False)), key=f"meter_{i}")
-                        c1, c2 = st.columns(2)
-                        save = c1.form_submit_button("Save")
-                        cancel = c2.form_submit_button("Cancel")
+                        cc1, cc2 = st.columns(2)
+                        save = cc1.form_submit_button("Save")
+                        cancel = cc2.form_submit_button("Cancel")
                         if save:
                             e["rate_pct"] = float(new_rate)
                             e["truck"] = bool(new_truck)
                             e["meter"] = bool(new_meter)
                             st.session_state.editing_index = None
-                            st.success(f"Updated {e['name']}")
                             st.rerun()
                         if cancel:
                             st.session_state.editing_index = None
                             st.rerun()
 
-                st.divider()
+                st.markdown('</div>', unsafe_allow_html=True)
         else:
             st.info("No technicians yet.")
 
-        # --- Add new technician section (inside the same folding bar) ---
+        # ---- Add technician (below the list, still inside the expander) ----
         st.subheader("Add technician")
         with st.form("add_tech_form", clear_on_submit=True):
             new_name = st.text_input("Name")
             new_rate_pct = st.number_input("Rate (%)", min_value=0.0, max_value=1000.0, value=25.0)
             new_truck = st.checkbox("Truck")
             new_meter = st.checkbox("Meter")
-            add_btn = st.form_submit_button("Add")
-            if add_btn and new_name.strip():
-                ensure_employee(new_name.strip(), rate_pct=new_rate_pct, truck=new_truck, meter=new_meter)
-                st.success(f"Added {new_name.strip()}")
+            if st.form_submit_button("Add") and new_name.strip():
+                ensure_employee(new_name, rate_pct=new_rate_pct, truck=new_truck, meter=new_meter)
                 st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 
-# --- Main: file upload & processing ---
+# Main: upload & processing
 uploaded = st.file_uploader("Upload weekly .xlsx report", type=["xlsx"])
 
 if uploaded:
@@ -240,13 +241,7 @@ if uploaded:
 
     # Column mapping
     default_date = cols[0]
-    guess_tech = None
-    for cand in ["Technician", "Tech", "Worker", "Employee", "Name"]:
-        if cand in cols:
-            guess_tech = cand
-            break
-    if guess_tech is None:
-        guess_tech = cols[1]
+    guess_tech = next((c for c in ["Technician", "Tech", "Worker", "Employee", "Name"] if c in cols), cols[1])
     default_jobfee = cols[-1]
 
     st.markdown("#### Column mapping")
@@ -258,7 +253,7 @@ if uploaded:
     with c3:
         jobfee_col = st.selectbox("Job fee column (multiplied by Rate %)", cols, index=cols.index(default_jobfee))
 
-    # Filter to technicians that exist in the pre-populated list
+    # Match technicians from file to our prepop list
     techs_in_file = sorted(df[tech_col].dropna().astype(str).unique())
     system_names = [e["name"] for e in st.session_state.employees]
     matched = [t for t in techs_in_file if t in system_names]
